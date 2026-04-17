@@ -4,19 +4,40 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
-import plotly.express as px
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Fair AI Governance System", layout="wide")
+st.set_page_config(page_title="MeritAI", layout="wide")
 
 # ---------------------------
-# Load Data
+# HEADER (POLISHED UI)
+# ---------------------------
+st.markdown("""
+# ⚖️ MeritAI
+### Fair Decision Intelligence Platform
+
+Ensuring hiring and workplace decisions are driven by **merit, not bias**.
+""")
+
+st.caption("Gender is removed from decision-making and used only for internal fairness auditing.")
+
+# ---------------------------
+# LOAD DATA
 # ---------------------------
 def load_data(file):
     return pd.read_csv(file)
 
 # ---------------------------
-# Merit Score (Auto)
+# AUTO DETECT GENDER
+# ---------------------------
+def detect_sensitive_column(df):
+    keywords = ["gender", "sex"]
+    for col in df.columns:
+        if any(k in col.lower() for k in keywords):
+            return col
+    return None
+
+# ---------------------------
+# MERIT SCORE
 # ---------------------------
 def compute_merit_auto(df, numeric_cols):
     weights = np.linspace(1, 2, len(numeric_cols))
@@ -29,7 +50,7 @@ def compute_merit_auto(df, numeric_cols):
     return score / weights.sum()
 
 # ---------------------------
-# Fairness Metrics
+# FAIRNESS METRICS
 # ---------------------------
 def demographic_parity(y_pred, sensitive):
     return abs(y_pred[sensitive == 0].mean() - y_pred[sensitive == 1].mean())
@@ -57,9 +78,9 @@ def merit_gap(df, y_pred, sensitive, merit):
     return abs(g0["pred"].mean() - g1["pred"].mean())
 
 # ---------------------------
-# NEW MODULE 1: Fair Threshold
+# FAIR THRESHOLD
 # ---------------------------
-def find_fair_threshold(y_probs, sensitive, y_true):
+def find_fair_threshold(y_probs, sensitive):
     thresholds = np.linspace(0.1, 0.9, 50)
     best_t = 0.5
     best_gap = float("inf")
@@ -75,33 +96,27 @@ def find_fair_threshold(y_probs, sensitive, y_true):
     return best_t, best_gap
 
 # ---------------------------
-# NEW MODULE 2: Tradeoff Curve
+# TRADEOFF CURVE
 # ---------------------------
 def tradeoff_curve(y_probs, sensitive, y_true):
     thresholds = np.linspace(0.1, 0.9, 50)
-
-    acc_list = []
-    dp_list = []
+    acc_list, dp_list = [], []
 
     for t in thresholds:
         preds = (y_probs >= t).astype(int)
-        acc = accuracy_score(y_true, preds)
-        dp = abs(preds[sensitive==0].mean() - preds[sensitive==1].mean())
+        acc_list.append(accuracy_score(y_true, preds))
+        dp_list.append(abs(preds[sensitive==0].mean() - preds[sensitive==1].mean()))
 
-        acc_list.append(acc)
-        dp_list.append(dp)
-
-    return thresholds, acc_list, dp_list
+    return dp_list, acc_list
 
 # ---------------------------
-# NEW MODULE 3: Selection Simulation
+# HIRING SIMULATION
 # ---------------------------
 def fairness_selection(df, merit, sensitive, k=50):
     df_temp = df.copy()
     df_temp["merit"] = merit
 
-    df_sorted = df_temp.sort_values(by="merit", ascending=False)
-    selected = df_sorted.head(k)
+    selected = df_temp.sort_values(by="merit", ascending=False).head(k)
 
     male_ratio = (selected[sensitive]==0).mean()
     female_ratio = (selected[sensitive]==1).mean()
@@ -109,45 +124,51 @@ def fairness_selection(df, merit, sensitive, k=50):
     return selected, male_ratio, female_ratio
 
 # ---------------------------
-# UI
+# UI FLOW
 # ---------------------------
-st.title("⚖️ Fair AI Governance System (Advanced)")
+st.header("📌 1. Data Input")
 
-uploaded = st.sidebar.file_uploader("Upload Dataset", type=["csv"])
+uploaded = st.file_uploader("Upload CSV Dataset", type=["csv"])
 
 if not uploaded:
-    st.warning("Upload a dataset to proceed")
+    st.warning("Upload a dataset to begin")
     st.stop()
 
 df = load_data(uploaded)
-
-st.subheader("📂 Dataset Preview")
 st.dataframe(df.head())
 
-target = st.selectbox("🎯 Target Column", df.columns)
-sensitive = st.selectbox("⚠️ Gender Column", df.columns)
+# Auto detect sensitive column
+sensitive = detect_sensitive_column(df)
 
-# Encode gender if needed
-if df[sensitive].dtype == "object":
-    df[sensitive] = df[sensitive].astype("category").cat.codes
+if sensitive is None:
+    st.warning("No gender column detected. Fairness audit limited.")
+else:
+    if df[sensitive].dtype == "object":
+        df[sensitive] = df[sensitive].astype("category").cat.codes
 
-numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
-numeric_cols = [col for col in numeric_cols if col != target]
+# Target selection (only this is allowed)
+target = st.selectbox("Select Target Column", df.columns)
 
 # ---------------------------
-# RUN ANALYSIS
+# RUN SYSTEM
 # ---------------------------
-if st.button("🚀 Run Governance Analysis"):
+st.header("⚙️ 2. Governance Analysis")
+
+if st.button("Run Analysis"):
+
+    numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+    numeric_cols = [col for col in numeric_cols if col != target]
 
     df["merit_score"] = compute_merit_auto(df, numeric_cols)
 
     X = df.drop(columns=[target])
-    y = df[target]
+
+    # REMOVE GENDER FROM MODEL
+    if sensitive and sensitive in X.columns:
+        X = X.drop(columns=[sensitive])
 
     X = pd.get_dummies(X, drop_first=True)
-
-    if sensitive in X.columns:
-        X = X.drop(columns=[sensitive])
+    y = df[target]
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
@@ -157,59 +178,77 @@ if st.button("🚀 Run Governance Analysis"):
     y_probs = model.predict_proba(X_test)[:,1]
     y_pred = model.predict(X_test)
 
-    sens_test = df.loc[y_test.index, sensitive]
+    sens_test = df.loc[y_test.index, sensitive] if sensitive else None
     merit_test = df.loc[y_test.index, "merit_score"]
 
-    # Metrics
+    # ---------------------------
+    # METRICS
+    # ---------------------------
+    st.header("📊 3. Fairness Metrics")
+
     acc = accuracy_score(y_test, y_pred)
-    dp = demographic_parity(y_pred, sens_test)
-    eo = equal_opportunity(y_test, y_pred, sens_test)
-    mg = merit_gap(df.loc[y_test.index], y_pred, sensitive, merit_test)
-
-    st.header("📊 Core Metrics")
     st.metric("Accuracy", f"{acc:.3f}")
-    st.metric("DP Gap", f"{dp:.3f}")
-    st.metric("EO Gap", f"{eo:.3f}")
-    st.metric("Merit Gap", f"{mg:.3f}")
+
+    if sensitive is not None:
+        dp = demographic_parity(y_pred, sens_test)
+        eo = equal_opportunity(y_test, y_pred, sens_test)
+        mg = merit_gap(df.loc[y_test.index], y_pred, sensitive, merit_test)
+
+        st.metric("DP Gap", f"{dp:.3f}")
+        st.metric("EO Gap", f"{eo:.3f}")
+        st.metric("Merit Gap", f"{mg:.3f}")
+
+        # Insight box
+        if mg > 0.1:
+            st.warning("⚠️ High-merit candidates are not being treated equally.")
+        else:
+            st.success("✅ Fair treatment across high-merit candidates.")
 
     # ---------------------------
-    # MODULE 1: Threshold Optimization
+    # THRESHOLD
     # ---------------------------
-    st.header("⚙️ Fairness-Constrained Threshold")
+    st.header("⚙️ 4. Fairness Optimization")
 
-    best_t, best_gap = find_fair_threshold(y_probs, sens_test, y_test)
-
-    st.write("Optimal Threshold:", round(best_t, 3))
-    st.write("Reduced Bias (DP Gap):", round(best_gap, 3))
-
-    # ---------------------------
-    # MODULE 2: Tradeoff Curve
-    # ---------------------------
-    st.header("📈 Fairness vs Accuracy Trade-off")
-
-    thresholds, acc_list, dp_list = tradeoff_curve(y_probs, sens_test, y_test)
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=dp_list, y=acc_list, mode='lines+markers'))
-
-    fig.update_layout(
-        title="Trade-off Curve",
-        xaxis_title="Bias (DP Gap)",
-        yaxis_title="Accuracy"
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
+    if sensitive is not None:
+        best_t, best_gap = find_fair_threshold(y_probs, sens_test)
+        st.write("Optimal Threshold:", round(best_t, 3))
+        st.write("Reduced Bias:", round(best_gap, 3))
 
     # ---------------------------
-    # MODULE 3: Hiring Simulation
+    # TRADEOFF
     # ---------------------------
-    st.header("🎯 Fair Hiring Simulation")
+    st.header("📈 5. Trade-off Analysis")
 
-    selected, male_ratio, female_ratio = fairness_selection(
-        df.loc[y_test.index], merit_test, sensitive
-    )
+    if sensitive is not None:
+        dp_list, acc_list = tradeoff_curve(y_probs, sens_test, y_test)
 
-    st.write("Male Selection Rate:", male_ratio)
-    st.write("Female Selection Rate:", female_ratio)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=dp_list, y=acc_list, mode='lines+markers'))
 
-    st.dataframe(selected.head(20))
+        fig.update_layout(
+            xaxis_title="Bias (DP Gap)",
+            yaxis_title="Accuracy"
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ---------------------------
+    # SIMULATION
+    # ---------------------------
+    st.header("🎯 6. Hiring Simulation")
+
+    if sensitive is not None:
+        selected, male_ratio, female_ratio = fairness_selection(
+            df.loc[y_test.index], merit_test, sensitive
+        )
+
+        st.write("Male Selection Rate:", male_ratio)
+        st.write("Female Selection Rate:", female_ratio)
+
+        st.dataframe(selected.head(20))
+
+# ---------------------------
+# FOOTER
+# ---------------------------
+st.markdown("---")
+st.caption("Built for Google Solution Challenge | Ethical AI for Real-World Impact")
